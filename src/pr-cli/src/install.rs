@@ -216,6 +216,18 @@ fn is_docker_hub_host(host: &str) -> bool {
     )
 }
 
+fn docker_hub_mirror_blob_url(
+    registry_base: &str,
+    repository: &str,
+    digest: &str,
+) -> Option<String> {
+    let host = registry_base
+        .strip_prefix("https://")?
+        .trim_end_matches('/');
+    is_docker_hub_host(host)
+        .then(|| blob_url("https://mirror.gcr.io", repository, digest))
+}
+
 fn default_install_name_for_oci(reference: &ResolvedOciReference) -> String {
     reference
         .repository
@@ -673,13 +685,43 @@ fn populate_oci_container(
         Path::new(&rootfs),
         |layer, blob| {
             let url = blob_url(&resolved.registry_base, &resolved.repository, &layer.digest);
-            rt.block_on(crate::oci::download_layer(
+            let primary = rt.block_on(crate::oci::download_layer(
                 &url,
                 blob,
                 &layer.digest,
                 &mut bearer_token,
                 crate::oci::NETWORK_RETRY,
-            ))
+            ));
+            if primary.is_ok() {
+                return primary;
+            }
+
+            let primary_error = primary.expect_err("checked failed OCI download");
+            let Some(mirror_url) = docker_hub_mirror_blob_url(
+                &resolved.registry_base,
+                &resolved.repository,
+                &layer.digest,
+            ) else {
+                return Err(primary_error);
+            };
+
+            msg_status(
+                "Docker Hub layer transfer failed; retrying this layer through Google's Docker Hub cache...",
+            );
+            let mut mirror_token = None;
+            match rt.block_on(crate::oci::download_layer(
+                &mirror_url,
+                blob,
+                &layer.digest,
+                &mut mirror_token,
+                crate::oci::NETWORK_RETRY,
+            )) {
+                Ok(()) => Ok(()),
+                Err(mirror_error) => Err(format!(
+                    "Docker Hub blob download failed: {}; Google mirror fallback failed: {}",
+                    primary_error, mirror_error
+                )),
+            }
         },
     )?;
 
