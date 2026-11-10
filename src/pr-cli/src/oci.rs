@@ -536,7 +536,7 @@ async fn download_to_partial(
     let response = request
         .send()
         .await
-        .map_err(|e| Failure::Retry(format!("download blob {}: {}", url, e)))?;
+        .map_err(|e| Failure::Retry(format!("download blob {}: {:#}", url, e)))?;
     if !response.status().is_success() {
         return Err(status_failure(url, &response));
     }
@@ -550,7 +550,7 @@ async fn download_to_partial(
     let mut hasher = sha2::Sha256::new();
     let mut stream = response.bytes_stream();
     while let Some(next) = stream.next().await {
-        let chunk = next.map_err(|e| Failure::Retry(format!("read blob stream {}: {}", url, e)))?;
+        let chunk = next.map_err(|e| Failure::Retry(format!("read blob stream {}: {:#}", url, e)))?;
         hasher.update(&chunk);
         file.write_all(&chunk)
             .await
